@@ -1,17 +1,21 @@
 // Using Arduino Pro Mini, 5vdc, 16MHz
 // HC-05 bluetooth module on softserial pins 4/5 (also uses 6/7)
 // nokia 5110 display on 8/9/10/11/12
+// ILI9341_t3 library required
+// 2.8" TFT color touch screen replaces nokia 5110.
+// ILI9431 uses pins 8/9/10/11/12 (same pins as former n5110)
 
 const char* VERSION="v0.2";
 
 #include <SoftwareSerial.h>
 #include "font.h"
 
-#define RST 12
-#define CE  11
-#define DC  10
-#define DIN  9
-#define CLK  8
+#define RST   8
+#define DC    9
+#define CE   10
+#define DIN  11
+#define DOUT 12
+#define CLK  13
 
 #define BTRX     4
 #define BTTX     5
