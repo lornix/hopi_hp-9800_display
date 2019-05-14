@@ -5,10 +5,15 @@
 //
 // 2.8" TFT color touch screen
 // ILI9431 uses pins 8(rst)/9(dc)/10(cs)/11(miso)/12(mosi)/13(clk)
-// ILI9341_t3 library required
+// Required Libraries:
+//      Adafruit_ILI9341
+//      Adafruit_GFX
+//      SoftwareSerial
+//      SPI
 
 const char* VERSION="v0.2";
 
+#include <Adafruit_ILI9341.h>
 #include <SoftwareSerial.h>
 #include "font.h"
 
