@@ -81,9 +81,11 @@ struct hopi {
 } hopi;
 
 SoftwareSerial bt(BTRX,BTTX); // RX pin, TX pin
+Adafruit_ILI9341 tft(CS,DC,RST);
 
 bool checkBluetooth()
 {
+    // are we connected?
     return (digitalRead(BTSTATUS)!=0);
 }
 void enableBluetooth()
@@ -99,23 +101,23 @@ void disableBluetooth()
     digitalWrite(BTPWR, LOW);
 }
 
-void lcdWriteCmd(byte cmd)
+void tftWriteCmd(byte cmd)
 {
-    digitalWrite(DC, LOW); //DC pin is low for commands
-    digitalWrite(CS, LOW);
-    shiftOut(DIN, CLK, MSBFIRST, cmd); //transmit serial data
-    digitalWrite(CS, HIGH);
+    // digitalWrite(DC, LOW); //DC pin is low for commands
+    // digitalWrite(CS, LOW);
+    // shiftOut(DIN, CLK, MSBFIRST, cmd); //transmit serial data
+    // digitalWrite(CS, HIGH);
 }
 
-void lcdWriteData(byte dat)
+void tftWriteData(byte dat)
 {
-    digitalWrite(DC, HIGH); //DC pin is high for data
-    digitalWrite(CS, LOW);
-    shiftOut(DIN, CLK, MSBFIRST, dat); //transmit serial data
-    digitalWrite(CS, HIGH);
+    // digitalWrite(DC, HIGH); //DC pin is high for data
+    // digitalWrite(CS, LOW);
+    // shiftOut(DIN, CLK, MSBFIRST, dat); //transmit serial data
+    // digitalWrite(CS, HIGH);
 }
 
-void lcdChar(unsigned char character)
+void tftChar(unsigned char character)
 {
     // anything not pure ascii, replace with '?'
     if ((character<32)or(character>127)) {
@@ -123,56 +125,37 @@ void lcdChar(unsigned char character)
     }
     // Write the 5 bytes for character
     for (int i=0; i<5; i++) {
-        lcdWriteData(ASCII[character - 0x20][i]);
+        tftWriteData(ASCII[character - 0x20][i]);
     }
     // and the single dot spacer
-    lcdWriteData(0x00);
+    tftWriteData(0x00);
 }
 
-void lcdXYString(int x, int y, char *characters)
+void tftXYString(int x, int y, char *characters)
 {
-    lcdWriteCmd(0x80 | x);
-    lcdWriteCmd(0x40 | y);
+    tftWriteCmd(0x80 | x);
+    tftWriteCmd(0x40 | y);
     while (*characters) {
-        lcdChar(*characters++);
+        tftChar(*characters++);
     }
 }
-void lcdInit()
+void tftInit()
 {
-    pinMode(RST, OUTPUT);
-    pinMode(CS,  OUTPUT);
-    pinMode(DC,  OUTPUT);
-    pinMode(DIN, OUTPUT);
-    pinMode(CLK, OUTPUT);
-
-    // hard reset of 5110 module
-    digitalWrite(RST, LOW);
-    delay(50);
-    digitalWrite(RST, HIGH);
-
-    // choose extended command set
-    lcdWriteCmd(0x21);
-    // set contrast
-    lcdWriteCmd(0xB3);
-    // set temp coefficent to compensate for ambient
-    lcdWriteCmd(0x04);
-    // set LCD bias mode.  Bright/Dark
-    lcdWriteCmd(0x14);
-    // choose basic command set
-    lcdWriteCmd(0x20);
-    // set LCD for normal viewing (inverse, all-on, etc)
-    lcdWriteCmd(0x0C);
+    tft.begin();
+    tft.setRotation(0);
+    tft.fillScreen(ILI9341_BLACK);
+    tft.fillScreen(ILI9341_RED);
+    tft.fillScreen(ILI9341_GREEN);
+    tft.fillScreen(ILI9341_BLUE);
+    tft.fillScreen(ILI9341_BLACK);
 }
 
-void lcdClear()
+void tftClear()
 {
-    // just push blanks until it's clear (84 * 48 = 504 writes)
-    for (int i=0; i<(84*48); ++i) {
-        lcdWriteData(0x00); // clear LCD
-    }
+    tft.fillScreen(ILI9341_BLACK);
     // reset 'cursor' to home
-    lcdWriteCmd(0x80);
-    lcdWriteCmd(0x40);
+    tftWriteCmd(0x80);
+    tftWriteCmd(0x40);
 }
 
 double decode_float_dcba(int offset)
@@ -204,7 +187,7 @@ void updateModbusValues()
 {
 #define MAX_RESPONSE 256
     static long lastpoll=0;
-    static boolean lcdCleared=false;
+    static boolean tftCleared=false;
     // string to send to BT hopi
     // I assume device ID 1, rather unlikely your Hopi will be different
     // if you know how to change the Hopi, you can change this to match
@@ -220,26 +203,26 @@ void updateModbusValues()
 
     // if no bluetooth connection, complain, and return
     while (!checkBluetooth()) {
-        if (!lcdCleared) {
+        if (!tftCleared) {
             // something wrong? drop power to BT module
             disableBluetooth();
             // inverse screen
-            lcdWriteCmd(0x0D);
-            lcdClear();
-            lcdXYString(30,2,(char*)"Lost");
-            lcdXYString(15,3,(char*)"Bluetooth");
-            lcdXYString(12,4,(char*)"Connection");
-            lcdCleared=true;
+            tftWriteCmd(0x0D);
+            tftClear();
+            tftXYString(30,2,(char*)"Lost");
+            tftXYString(15,3,(char*)"Bluetooth");
+            tftXYString(12,4,(char*)"Connection");
+            tftCleared=true;
             Serial.println("Bluetooth Connection Lost");
             enableBluetooth();
         }
         delay(100);
     }
-    if (lcdCleared) {
+    if (tftCleared) {
         Serial.println("Bluetooth Connection Restored");
-        lcdCleared=false;
+        tftCleared=false;
         // normal screen
-        lcdWriteCmd(0x0C);
+        tftWriteCmd(0x0C);
         // force a poll to update
         lastpoll=millis();
     }
@@ -285,25 +268,25 @@ void waitForBluetooth()
     enableBluetooth();
 
     Serial.print("Waiting for Bluetooth: ");
-    lcdXYString(0,5,(char*)"Wait Bluetooth");
+    tftXYString(0,5,(char*)"Wait Bluetooth");
 
     while (!checkBluetooth()) {
         delay(50);
     }
 
-    lcdXYString(0,5,(char*)"  Connected   ");
+    tftXYString(0,5,(char*)"  Connected   ");
     Serial.println("Connected");
 }
 
 void splashScreen()
 {
     Serial.print("Splash Screen: ");
-    lcdClear();
-    lcdXYString(6,0,(char*)"Hopi HP-9800");
-    lcdXYString(15,1,(char*)"Bluetooth");
-    lcdXYString(21,2,(char*)"Display");
-    lcdXYString((MAX_STR_LEN-min(strlen(VERSION),14))*3,3,(char*)VERSION);
-    lcdXYString(24,4,(char*)"lornix");
+    tftClear();
+    tftXYString(6,0,(char*)"Hopi HP-9800");
+    tftXYString(15,1,(char*)"Bluetooth");
+    tftXYString(21,2,(char*)"Display");
+    tftXYString((MAX_STR_LEN-min(strlen(VERSION),14))*3,3,(char*)VERSION);
+    tftXYString(24,4,(char*)"lornix");
     delay(2000);
     Serial.println("Done");
 }
@@ -319,7 +302,7 @@ void setup()
     // turn off BT module
     disableBluetooth();
 
-    lcdInit();
+    tftInit();
 
     splashScreen();
 
@@ -337,12 +320,12 @@ void loop()
 
     updateTick--;
     if (updateTick<0) {
-        lcdXYString(0,0,DBLTOSTR(hopi.power));   lcdXYString(48,0,(char*)" Watts");
-        lcdXYString(0,1,DBLTOSTR(hopi.current)); lcdXYString(48,1,(char*)" Amps ");
-        lcdXYString(0,2,DBLTOSTR(hopi.voltage)); lcdXYString(48,2,(char*)" Volts");
-        lcdXYString(0,3,DBLTOSTR(hopi.pfactor)); lcdXYString(48,3,(char*)" pfact");
-        lcdXYString(0,4,DBLTOSTR(hopi.freq));    lcdXYString(48,4,(char*)" Hz   ");
-        lcdXYString(0,5,DBLTOSTR(hopi.annual));  lcdXYString(48,5,(char*)" KW Hr");
+        tftXYString(0,0,DBLTOSTR(hopi.power));   tftXYString(48,0,(char*)" Watts");
+        tftXYString(0,1,DBLTOSTR(hopi.current)); tftXYString(48,1,(char*)" Amps ");
+        tftXYString(0,2,DBLTOSTR(hopi.voltage)); tftXYString(48,2,(char*)" Volts");
+        tftXYString(0,3,DBLTOSTR(hopi.pfactor)); tftXYString(48,3,(char*)" pfact");
+        tftXYString(0,4,DBLTOSTR(hopi.freq));    tftXYString(48,4,(char*)" Hz   ");
+        tftXYString(0,5,DBLTOSTR(hopi.annual));  tftXYString(48,5,(char*)" KW Hr");
         // only update screen every 'updateTick' loops through here
         updateTick=1000;
     }
