@@ -1,21 +1,23 @@
 // Using Arduino Pro Mini, 5vdc, 16MHz
-// HC-05 bluetooth module on softserial pins 4/5 (also uses 6/7)
-// nokia 5110 display on 8/9/10/11/12
+//
+// HC-05 bluetooth module on softserial pins 4/5
+// HC-05 uses pins 4(rx)/5(tx)/6(status)/7(power)
+//
+// 2.8" TFT color touch screen
+// ILI9431 uses pins 8(rst)/9(dc)/10(cs)/11(miso)/12(mosi)/13(clk)
 // ILI9341_t3 library required
-// 2.8" TFT color touch screen replaces nokia 5110.
-// ILI9431 uses pins 8/9/10/11/12 (same pins as former n5110)
 
 const char* VERSION="v0.2";
 
 #include <SoftwareSerial.h>
 #include "font.h"
 
-#define RST   8
-#define DC    9
-#define CE   10
-#define DIN  11
-#define DOUT 12
-#define CLK  13
+#define RST      8
+#define DC       9
+#define CS       10
+#define DIN      11
+#define DOUT     12
+#define CLK      13
 
 #define BTRX     4
 #define BTTX     5
@@ -26,7 +28,6 @@ const char* VERSION="v0.2";
 
 #define DBLTOSTR(val) dtostrf((double)val,8,3,hopi.str)
 #define I16TOSTR(val) dtostrf((double)val,8,0,hopi.str)
-#define BTCONN() (digitalRead(BTSTATUS)!=0)
 
 // please remember offsets are into 16-bit WORDS!
 enum offsets {
@@ -62,7 +63,7 @@ struct hopi {
     double active;
     // Reactive Power Consumption
     double reactive;
-    // total time with non-zero load
+    // total time with non-zero load (in minutes?! Weird!)
     double load_time;
     // hours per day in use
     uint16_t work_hours;
@@ -76,20 +77,37 @@ struct hopi {
 
 SoftwareSerial bt(BTRX,BTTX); // RX pin, TX pin
 
+bool checkBluetooth()
+{
+    return (digitalRead(BTSTATUS)!=0);
+}
+void enableBluetooth()
+{
+    // yeah, cheesy function, but helps readability of code
+    pinMode(BTPWR, OUTPUT);
+    digitalWrite(BTPWR, HIGH);
+}
+void disableBluetooth()
+{
+    // readability.. yeah... that's it!
+    pinMode(BTPWR, OUTPUT);
+    digitalWrite(BTPWR, LOW);
+}
+
 void lcdWriteCmd(byte cmd)
 {
     digitalWrite(DC, LOW); //DC pin is low for commands
-    digitalWrite(CE, LOW);
+    digitalWrite(CS, LOW);
     shiftOut(DIN, CLK, MSBFIRST, cmd); //transmit serial data
-    digitalWrite(CE, HIGH);
+    digitalWrite(CS, HIGH);
 }
 
 void lcdWriteData(byte dat)
 {
     digitalWrite(DC, HIGH); //DC pin is high for data
-    digitalWrite(CE, LOW);
+    digitalWrite(CS, LOW);
     shiftOut(DIN, CLK, MSBFIRST, dat); //transmit serial data
-    digitalWrite(CE, HIGH);
+    digitalWrite(CS, HIGH);
 }
 
 void lcdChar(unsigned char character)
@@ -117,7 +135,7 @@ void lcdXYString(int x, int y, char *characters)
 void lcdInit()
 {
     pinMode(RST, OUTPUT);
-    pinMode(CE,  OUTPUT);
+    pinMode(CS,  OUTPUT);
     pinMode(DC,  OUTPUT);
     pinMode(DIN, OUTPUT);
     pinMode(CLK, OUTPUT);
@@ -196,8 +214,10 @@ void updateModbusValues()
     unsigned int i;
 
     // if no bluetooth connection, complain, and return
-    while (!BTCONN()) {
+    while (!checkBluetooth()) {
         if (!lcdCleared) {
+            // something wrong? drop power to BT module
+            disableBluetooth();
             // inverse screen
             lcdWriteCmd(0x0D);
             lcdClear();
@@ -206,6 +226,7 @@ void updateModbusValues()
             lcdXYString(12,4,(char*)"Connection");
             lcdCleared=true;
             Serial.println("Bluetooth Connection Lost");
+            enableBluetooth();
         }
         delay(100);
     }
@@ -223,15 +244,18 @@ void updateModbusValues()
         return;
     }
 
+    // send the MODBUS request
     for (i=0; i<sizeof(request); ++i) {
         bt.write(request[i]);
     }
+    // and receive the reply.
     i=0;
     while ((i<MAX_RESPONSE)&&(bt.available()>0)) {
         response[i++]=bt.read();
     }
+    // no, I'm not checking for a proper CRC or anything, winging it!
 
-    // copy data to raw storage, skip first 3 bytes, and last two
+    // copy data to raw storage, skip first 3 bytes (CMD), and last two (CRC)
     memcpy(hopi.raw,response+3,40);
 
     hopi.current=    decode_float_dcba(CURRENT);
@@ -253,12 +277,12 @@ void updateModbusValues()
 void waitForBluetooth()
 {
     // turn on BT module
-    digitalWrite(BTPWR, HIGH);
+    enableBluetooth();
 
     Serial.print("Waiting for Bluetooth: ");
     lcdXYString(0,5,(char*)"Wait Bluetooth");
 
-    while (!BTCONN()) {
+    while (!checkBluetooth()) {
         delay(50);
     }
 
@@ -288,8 +312,7 @@ void setup()
     Serial.println("\n\rStarting Hopi HP-9800bt display");
 
     // turn off BT module
-    pinMode(BTPWR, OUTPUT);
-    digitalWrite(BTPWR, LOW);
+    disableBluetooth();
 
     lcdInit();
 
