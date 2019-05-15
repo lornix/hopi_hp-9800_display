@@ -15,8 +15,23 @@ const char* VERSION="v0.2";
 
 #include <Adafruit_ILI9341.h>
 #include <SoftwareSerial.h>
-#include "font.h"
+#include <Fonts/FreeMonoBold12pt7b.h>
 
+#define FONT_HEIGHT 22
+#define FONT_WIDTH  15
+
+// hard coded for landscape mode 320x240
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 240
+#define ROTATION 1
+
+// bluetooth module (HC-05) digital pin connections
+#define BTRX     4
+#define BTTX     5
+#define BTSTATUS 6
+#define BTPWR    7
+
+// TFT color display pin connections
 #define RST      8
 #define DC       9
 #define CS       10
@@ -24,13 +39,13 @@ const char* VERSION="v0.2";
 #define DOUT     12
 #define CLK      13
 
-#define BTRX     4
-#define BTTX     5
-#define BTSTATUS 6
-#define BTPWR    7
+// determine pixel offset to center string on screen
+#define CENTER(y,str) (max(0,((SCREEN_WIDTH-(strlen(str)*FONT_WIDTH))/2))),y,str
+// make fillRect do better job of surrounding text boundary
+#define FILLRECT_Y_ADJ (-3)
+#define FILLRECT_W_ADJ (1)
 
-#define MAX_STR_LEN 14
-
+// format number string, 3 decimals, or none
 #define DBLTOSTR(val) dtostrf((double)val,8,3,hopi.str)
 #define I16TOSTR(val) dtostrf((double)val,8,0,hopi.str)
 
@@ -51,19 +66,20 @@ enum offsets {
 };
 
 // holds all the data fumbled from hopi device
+// s_xxx is saved value for display flicker reduction
 struct hopi {
     // Power being used, Current * Voltage basically
-    double power;
+    double power, s_power;
     // Current being drawn
-    double current;
+    double current, s_current;
     // Voltage at input
-    double voltage;
+    double voltage, s_voltage;
     // Frequency of source, 50 or 60 Hz usually
-    double freq;
+    double freq, s_freq;
     // Power Factor, 1.0 = pure resistive
-    double pfactor;
+    double pfactor, s_pfactor;
     // total predicted annual consumption KWH
-    double annual;
+    double annual, s_annual;
     // Active Power Consumption
     double active;
     // Reactive Power Consumption
@@ -77,10 +93,13 @@ struct hopi {
     // raw data from hopi modbus request
     uint16_t raw[TOTAL_WORDS];
     // temporary storage for double->string conversions
-    char str[MAX_STR_LEN+1];
+    char str[20+1]; // magic number? FIXME
 } hopi;
 
+// bluetooth module @ 9600,8N1
 SoftwareSerial bt(BTRX,BTTX); // RX pin, TX pin
+
+// TFT 2.8" Display, blah, blah...
 Adafruit_ILI9341 tft(CS,DC,RST);
 
 bool checkBluetooth()
@@ -100,63 +119,54 @@ void disableBluetooth()
     pinMode(BTPWR, OUTPUT);
     digitalWrite(BTPWR, LOW);
 }
-
-void tftWriteCmd(byte cmd)
+void invalidateHopiData()
 {
-    // digitalWrite(DC, LOW); //DC pin is low for commands
-    // digitalWrite(CS, LOW);
-    // shiftOut(DIN, CLK, MSBFIRST, cmd); //transmit serial data
-    // digitalWrite(CS, HIGH);
+    // invalidate hopi data
+    memset(&hopi,0xff,sizeof(hopi));
 }
 
-void tftWriteData(byte dat)
+void XYString(int x, int y, char *str, int c=-1, int b=-1)
 {
-    // digitalWrite(DC, HIGH); //DC pin is high for data
-    // digitalWrite(CS, LOW);
-    // shiftOut(DIN, CLK, MSBFIRST, dat); //transmit serial data
-    // digitalWrite(CS, HIGH);
-}
-
-void tftChar(unsigned char character)
-{
-    // anything not pure ascii, replace with '?'
-    if ((character<32)or(character>127)) {
-        character='?';
+    int16_t x1,y1;
+    uint16_t w,h;
+    // optional color parameters
+    if (c>=0) {
+        // specified color?
+        tft.setTextColor(c);
     }
-    // Write the 5 bytes for character
-    for (int i=0; i<5; i++) {
-        tftWriteData(ASCII[character - 0x20][i]);
+    if (b<0) {
+        // if background not specified, use black
+        b=ILI9341_BLACK;
     }
-    // and the single dot spacer
-    tftWriteData(0x00);
+    // allow for easy line choices, 0-9 = lines, 10-239 = pixels
+    if (y<10) {
+        y=y*FONT_HEIGHT;
+    }
+    // compensate for varying baselines
+    y+=FONT_HEIGHT;
+    // determine size of string in pixel rectangle
+    tft.getTextBounds(str,x,y,&x1,&y1,&w,&h);
+    // blank that rectangle with background color
+    tft.fillRect(x1,y1+FILLRECT_Y_ADJ,w+FILLRECT_W_ADJ,FONT_HEIGHT,b);
+    // display string at x,y position (and compensate for baseline)
+    tft.setCursor(x,y);
+    tft.print(str);
 }
 
-void tftXYString(int x, int y, char *characters)
+void screenClear(unsigned int color=ILI9341_BLACK)
 {
-    tftWriteCmd(0x80 | x);
-    tftWriteCmd(0x40 | y);
-    while (*characters) {
-        tftChar(*characters++);
-    }
+    tft.fillScreen(color);
+    tft.setCursor(0,0);
 }
-void tftInit()
+
+void screenInit()
 {
     tft.begin();
-    tft.setRotation(0);
-    tft.fillScreen(ILI9341_BLACK);
-    tft.fillScreen(ILI9341_RED);
-    tft.fillScreen(ILI9341_GREEN);
-    tft.fillScreen(ILI9341_BLUE);
-    tft.fillScreen(ILI9341_BLACK);
+    tft.setRotation(ROTATION);
+    tft.setFont(&FreeMonoBold12pt7b);
+    screenClear();
 }
 
-void tftClear()
-{
-    tft.fillScreen(ILI9341_BLACK);
-    // reset 'cursor' to home
-    tftWriteCmd(0x80);
-    tftWriteCmd(0x40);
-}
 
 double decode_float_dcba(int offset)
 {
@@ -168,10 +178,10 @@ double decode_float_dcba(int offset)
     u.b[2]=(hopi.raw[offset+1]>>0)&0xFF;
     u.b[1]=(hopi.raw[offset+0]>>8)&0xFF;
     u.b[0]=(hopi.raw[offset+0]>>0)&0xFF;
-    // a couple sanity checks
-    if (u.dbl<0.0) { u.dbl=0.0f; }
-    // if you've got more than 9999.9 AMPS flowing, congratulations!
-    if (u.dbl>9999.9) { u.dbl=9999.9f; }
+    // a couple sanity checks - no negative values
+    if (u.dbl<0.0f) { u.dbl=0.0f; }
+    // if you've got more than 9999.999 AMPS flowing, congratulations!
+    if (u.dbl>9999.999f) { u.dbl=9999.999f; }
     return u.dbl;
 }
 uint16_t decode_uint16_ba(int offset)
@@ -187,50 +197,55 @@ void updateModbusValues()
 {
 #define MAX_RESPONSE 256
     static long lastpoll=0;
-    static boolean tftCleared=false;
+    static boolean bluetoothLost=false;
     // string to send to BT hopi
     // I assume device ID 1, rather unlikely your Hopi will be different
     // if you know how to change the Hopi, you can change this to match
-    uint8_t request[]={
+    // (it *is* possible to change, in chase you desire to chain many of
+    // these on the same bus.  Uh huh... )
+    static uint8_t request[]={
         0x01,       // ask device #1
         0x03,       // request holding registers
         0x00,0x00,  // from 0x0000
         0x00,0x14,  // for 0x0014 registers (20 words, 40 bytes)
         0x45,0xc5   // CRC checksum
     };
-    uint8_t response[MAX_RESPONSE];
+    static uint8_t response[MAX_RESPONSE];
     unsigned int i;
 
-    // if no bluetooth connection, complain, and return
+    // if no bluetooth connection, complain
     while (!checkBluetooth()) {
-        if (!tftCleared) {
+        if (!bluetoothLost) {
             // something wrong? drop power to BT module
             disableBluetooth();
-            // inverse screen
-            tftWriteCmd(0x0D);
-            tftClear();
-            tftXYString(30,2,(char*)"Lost");
-            tftXYString(15,3,(char*)"Bluetooth");
-            tftXYString(12,4,(char*)"Connection");
-            tftCleared=true;
+            screenClear(ILI9341_RED);
+            XYString(CENTER(3,(char*)"Lost"));
+            XYString(CENTER(4,(char*)"Bluetooth"));
+            XYString(CENTER(5,(char*)"Connection"));
+            bluetoothLost=true;
             Serial.println("Bluetooth Connection Lost");
+            // pause and turn it back on to reconnect
+            delay(100);
             enableBluetooth();
         }
+        // just slow loop down while it waits for connection
         delay(100);
-    }
-    if (tftCleared) {
-        Serial.println("Bluetooth Connection Restored");
-        tftCleared=false;
-        // normal screen
-        tftWriteCmd(0x0C);
-        // force a poll to update
-        lastpoll=millis();
     }
 
     // only poll once in a while
-    if ((millis()-lastpoll)<100) {
+    if ((millis()-lastpoll)<200) {
         return;
     }
+
+    // did bluetooth go missing and has returned?
+    if (bluetoothLost) {
+        Serial.println("Bluetooth Connection Restored");
+        bluetoothLost=false;
+        screenClear();
+        // make display redraw everything
+        invalidateHopiData();
+    }
+
 
     // send the MODBUS request
     for (i=0; i<sizeof(request); ++i) {
@@ -268,26 +283,25 @@ void waitForBluetooth()
     enableBluetooth();
 
     Serial.print("Waiting for Bluetooth: ");
-    tftXYString(0,5,(char*)"Wait Bluetooth");
+    XYString(CENTER(9,(char*)"Wait Bluetooth"),ILI9341_BLUE);
 
     while (!checkBluetooth()) {
+        // slow loop down a bit
         delay(50);
     }
 
-    tftXYString(0,5,(char*)"  Connected   ");
     Serial.println("Connected");
 }
 
 void splashScreen()
 {
     Serial.print("Splash Screen: ");
-    tftClear();
-    tftXYString(6,0,(char*)"Hopi HP-9800");
-    tftXYString(15,1,(char*)"Bluetooth");
-    tftXYString(21,2,(char*)"Display");
-    tftXYString((MAX_STR_LEN-min(strlen(VERSION),14))*3,3,(char*)VERSION);
-    tftXYString(24,4,(char*)"lornix");
-    delay(2000);
+    screenClear();
+    XYString(CENTER(0,(char*)"Hopi HP-9800"),ILI9341_RED);
+    XYString(CENTER(2,(char*)"Bluetooth Display"),ILI9341_BLUE);
+    XYString(CENTER(4,(char*)VERSION),ILI9341_GREEN);
+    XYString(CENTER(6,(char*)"lornix@lornix.com"),ILI9341_ORANGE);
+    delay(750);
     Serial.println("Done");
 }
 
@@ -302,33 +316,73 @@ void setup()
     // turn off BT module
     disableBluetooth();
 
-    tftInit();
+    screenInit();
 
     splashScreen();
 
     waitForBluetooth();
 
-    // zero hopi data, start out with all zeros
-    memset(&hopi,0,sizeof(hopi));
+    screenClear();
+
+    invalidateHopiData();
 }
 
 void loop()
 {
-    static int updateTick=0;
+    static unsigned long updateTick=0;
+    static bool spinnerTick=false;
 
-    updateModbusValues();
+// to align values
+#define VALUECOL 32
+#define LEGENDCOL 150
 
-    updateTick--;
-    if (updateTick<0) {
-        tftXYString(0,0,DBLTOSTR(hopi.power));   tftXYString(48,0,(char*)" Watts");
-        tftXYString(0,1,DBLTOSTR(hopi.current)); tftXYString(48,1,(char*)" Amps ");
-        tftXYString(0,2,DBLTOSTR(hopi.voltage)); tftXYString(48,2,(char*)" Volts");
-        tftXYString(0,3,DBLTOSTR(hopi.pfactor)); tftXYString(48,3,(char*)" pfact");
-        tftXYString(0,4,DBLTOSTR(hopi.freq));    tftXYString(48,4,(char*)" Hz   ");
-        tftXYString(0,5,DBLTOSTR(hopi.annual));  tftXYString(48,5,(char*)" KW Hr");
-        // only update screen every 'updateTick' loops through here
-        updateTick=1000;
+// loop speed, very coarse
+#define MILLISLOOP 200
+
+    // update after MILLISLOOP ms
+    // full loop takes about 300ms (ugh! slow!  SPI bus?)
+    if ((millis()-updateTick)>MILLISLOOP) {
+
+        // update Hopi values from bluetooth
+        updateModbusValues();
+
+        // only update display if value has changed since last time
+        if (hopi.power!=hopi.s_power) {
+            XYString(VALUECOL,0,DBLTOSTR(hopi.power),   ILI9341_GREEN);
+            XYString(LEGENDCOL,0,(char*)"Watts", ILI9341_BLUE);
+            hopi.s_power=hopi.power;
+        }
+        if (hopi.current!=hopi.s_current) {
+            XYString(VALUECOL,1,DBLTOSTR(hopi.current),   ILI9341_GREEN);
+            XYString(LEGENDCOL,1,(char*)"Amps",  ILI9341_BLUE);
+            hopi.s_current=hopi.current;
+        }
+        if (hopi.voltage!=hopi.s_voltage) {
+            XYString(VALUECOL,2,DBLTOSTR(hopi.voltage), ILI9341_GREEN);
+            XYString(LEGENDCOL,2,(char*)"Volts", ILI9341_BLUE);
+            hopi.s_voltage=hopi.voltage;
+        }
+        if (hopi.pfactor!=hopi.s_pfactor) {
+            XYString(VALUECOL,3,DBLTOSTR(hopi.pfactor), ILI9341_GREEN);
+            XYString(LEGENDCOL,3,(char*)"pfact",        ILI9341_BLUE);
+            hopi.s_pfactor=hopi.pfactor;
+        }
+        if (hopi.freq!=hopi.s_freq) {
+            XYString(VALUECOL,4,DBLTOSTR(hopi.freq), ILI9341_GREEN);
+            XYString(LEGENDCOL,4,(char*)"Hz",        ILI9341_BLUE);
+            hopi.s_freq=hopi.freq;
+        }
+        if (hopi.annual!=hopi.s_annual) {
+            XYString(VALUECOL,5,DBLTOSTR(hopi.annual), ILI9341_GREEN);
+            XYString(LEGENDCOL,5,(char*)"KW Hr",       ILI9341_BLUE);
+            hopi.s_annual=hopi.annual;
+        }
+        updateTick=millis();
     }
+
+    // 'alive' indicator, toggles dots in upper left corner
+    tft.fillRect(SCREEN_WIDTH-5,0,5,5,(spinnerTick)?ILI9341_RED:ILI9341_GREEN);
+    spinnerTick=!spinnerTick;
 
     /*
      * if (Serial.available()) {
