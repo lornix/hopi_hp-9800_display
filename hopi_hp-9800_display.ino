@@ -35,19 +35,25 @@ const char* VERSION="v0.2";
 #define RST      8
 #define DC       9
 #define CS       10
-#define DIN      11
-#define DOUT     12
+#define MISO     11
+#define MOSI     12
 #define CLK      13
 
 // determine pixel offset to center string on screen
 #define CENTER(y,str) (max(0,((SCREEN_WIDTH-(strlen(str)*FONT_WIDTH))/2))),y,str
 // make fillRect do better job of surrounding text boundary
-#define FILLRECT_Y_ADJ (-3)
+#define FILLRECT_Y_ADJ (-4)
 #define FILLRECT_W_ADJ (1)
 
 // format number string, 3 decimals, or none
 #define DBLTOSTR(val) dtostrf((double)val,8,3,hopi.str)
 #define I16TOSTR(val) dtostrf((double)val,8,0,hopi.str)
+
+// max MODBUS response length from hopi
+#define MAX_RESPONSE_BYTES 256
+
+// maximum string length on a line
+#define MAX_STR_LEN ((SCREEN_WIDTH+FONT_WIDTH-1)/FONT_WIDTH)
 
 // please remember offsets are into 16-bit WORDS!
 enum offsets {
@@ -90,11 +96,26 @@ struct hopi {
     uint16_t work_hours;
     // modbus device ID, usually 1
     uint16_t devaddr;
-    // raw data from hopi modbus request
-    uint16_t raw[TOTAL_WORDS];
     // temporary storage for double->string conversions
-    char str[20+1]; // magic number? FIXME
+    char str[MAX_STR_LEN+1];
 } hopi;
+
+struct {
+    // command string to send to BT Hopi
+    // I assume device has ID 1, rather unlikely your Hopi will be different.
+    // If you change the Hopi ID, you can change this to match (it *is*
+    // possible to change, in case you desire to chain many of these on the
+    // same bus.  Uh huh... )
+    uint8_t request[8]={
+        0x01,       // query device #1
+        0x03,       // request holding registers
+        0x00,0x00,  // from 0x0000
+        0x00,0x14,  // for 0x0014 registers (20 words, 40 bytes)
+        0x45,0xc5   // CRC checksum
+    };
+    // and space to hold the response received
+    uint8_t response[MAX_RESPONSE_BYTES];
+} hopi2;
 
 // bluetooth module @ 9600,8N1
 SoftwareSerial bt(BTRX,BTTX); // RX pin, TX pin
@@ -109,18 +130,21 @@ bool checkBluetooth()
 }
 void enableBluetooth()
 {
+    Serial.println("Bluetooth Power: ON");
     // yeah, cheesy function, but helps readability of code
     pinMode(BTPWR, OUTPUT);
     digitalWrite(BTPWR, HIGH);
 }
 void disableBluetooth()
 {
+    Serial.println("Bluetooth Power: OFF");
     // readability.. yeah... that's it!
     pinMode(BTPWR, OUTPUT);
     digitalWrite(BTPWR, LOW);
 }
 void invalidateHopiData()
 {
+    Serial.println("Invalidate Hopi Data");
     // invalidate hopi data
     memset(&hopi,0xff,sizeof(hopi));
 }
@@ -167,17 +191,19 @@ void screenInit()
     screenClear();
 }
 
-
 double decode_float_dcba(int offset)
 {
     union {
         double dbl;
         uint8_t b[4];
     } u;
-    u.b[3]=(hopi.raw[offset+1]>>8)&0xFF;
-    u.b[2]=(hopi.raw[offset+1]>>0)&0xFF;
-    u.b[1]=(hopi.raw[offset+0]>>8)&0xFF;
-    u.b[0]=(hopi.raw[offset+0]>>0)&0xFF;
+    // compensate for raw data in reponse
+    offset=(offset*2)+3;
+    // rearrange bytes to convert from network format (big-endian) to double
+    u.b[3]=hopi2.response[offset+3];
+    u.b[2]=hopi2.response[offset+2];
+    u.b[1]=hopi2.response[offset+1];
+    u.b[0]=hopi2.response[offset+0];
     // a couple sanity checks - no negative values
     if (u.dbl<0.0f) { u.dbl=0.0f; }
     // if you've got more than 9999.999 AMPS flowing, congratulations!
@@ -186,31 +212,25 @@ double decode_float_dcba(int offset)
 }
 uint16_t decode_uint16_ba(int offset)
 {
-    unsigned int high=(hopi.raw[offset]>>8)&0xff;
-    unsigned int low=(hopi.raw[offset]>>0)&0xff;
+    // compensate for raw data in response
+    offset=(offset*2)+3;
+    unsigned int high=hopi2.response[offset+0];
+    unsigned int low= hopi2.response[offset+1];
     unsigned int val=(low<<8)+high;
     // no sanity checks needed, it's unsigned, and short int (65535!)
     return val;
 }
+void serialHex(uint8_t h)
+{
+    // dumb arduino HEX output doesn't pad to 2 bytes, or give a precision knob
+    if (h<0x0f) { Serial.print("0"); }
+    Serial.print(h,HEX);
+}
 
 void updateModbusValues()
 {
-#define MAX_RESPONSE 256
     static long lastpoll=0;
     static boolean bluetoothLost=false;
-    // string to send to BT hopi
-    // I assume device ID 1, rather unlikely your Hopi will be different
-    // if you know how to change the Hopi, you can change this to match
-    // (it *is* possible to change, in chase you desire to chain many of
-    // these on the same bus.  Uh huh... )
-    static uint8_t request[]={
-        0x01,       // ask device #1
-        0x03,       // request holding registers
-        0x00,0x00,  // from 0x0000
-        0x00,0x14,  // for 0x0014 registers (20 words, 40 bytes)
-        0x45,0xc5   // CRC checksum
-    };
-    static uint8_t response[MAX_RESPONSE];
     unsigned int i;
 
     // if no bluetooth connection, complain
@@ -232,10 +252,9 @@ void updateModbusValues()
         delay(100);
     }
 
+#define POLLDELAY 250
     // only poll once in a while
-    if ((millis()-lastpoll)<200) {
-        return;
-    }
+    if ((millis()-lastpoll)<POLLDELAY) { return; }
 
     // did bluetooth go missing and has returned?
     if (bluetoothLost) {
@@ -246,20 +265,41 @@ void updateModbusValues()
         invalidateHopiData();
     }
 
-
     // send the MODBUS request
-    for (i=0; i<sizeof(request); ++i) {
-        bt.write(request[i]);
+    for (i=0; i<sizeof(hopi2.request); ++i) {
+        bt.write(hopi2.request[i]);
     }
-    // and receive the reply.
-    i=0;
-    while ((i<MAX_RESPONSE)&&(bt.available()>0)) {
-        response[i++]=bt.read();
-    }
-    // no, I'm not checking for a proper CRC or anything, winging it!
 
-    // copy data to raw storage, skip first 3 bytes (CMD), and last two (CRC)
-    memcpy(hopi.raw,response+3,40);
+    // interframe delay
+    delay(1);
+
+    // and receive the reply.
+    int cnt;
+    long wait=millis();
+    while (((millis()-wait)<3000)&&((cnt=bt.available())<45)) { }
+    for (int i=0; i<cnt; i++) {
+        hopi2.response[i]=bt.read();
+    }
+    Serial.print(cnt);
+    Serial.print(": ");
+    for (int t=0; t<cnt; t++) {
+        serialHex(hopi2.response[t]);
+    }
+    Serial.println();
+
+    lastpoll=millis();
+
+    // no, I'm not checking for a proper CRC or anything, winging it!
+    // but we'll at least look for proper response length via byte 2
+
+    // did we get packet with 40 bytes of data?
+    if (hopi2.response[2]!=40) {
+        return;
+    }
+    // voltage still near zero?  try again
+    if (decode_float_dcba(VOLTAGE)<1.0f) {
+        return;
+    }
 
     hopi.current=    decode_float_dcba(CURRENT);
     hopi.voltage=    decode_float_dcba(VOLTAGE);
@@ -273,8 +313,6 @@ void updateModbusValues()
     hopi.load_time=  decode_float_dcba(LOAD_TIME)/60.0f;
     hopi.work_hours= decode_uint16_ba(WORK_HOURS);
     hopi.devaddr=    decode_uint16_ba(DEVADDR);
-
-    lastpoll=millis();
 }
 
 void waitForBluetooth()
@@ -282,32 +320,32 @@ void waitForBluetooth()
     // turn on BT module
     enableBluetooth();
 
-    Serial.print("Waiting for Bluetooth: ");
-    XYString(CENTER(9,(char*)"Wait Bluetooth"),ILI9341_BLUE);
+    Serial.print("Connecting to Bluetooth: ");
+    XYString(CENTER(9,(char*)"Wait for Bluetooth"),ILI9341_BLUE);
 
-    while (!checkBluetooth()) {
-        // slow loop down a bit
-        delay(50);
-    }
+    // slow loop down a bit while we wait
+    while (!checkBluetooth()) { delay(50); }
 
-    Serial.println("Connected");
+    Serial.println("Linked");
 }
 
 void splashScreen()
 {
     Serial.print("Splash Screen: ");
     screenClear();
+    tft.drawRect(0,0,SCREEN_WIDTH,SCREEN_HEIGHT,ILI9341_RED);
     XYString(CENTER(0,(char*)"Hopi HP-9800"),ILI9341_RED);
-    XYString(CENTER(2,(char*)"Bluetooth Display"),ILI9341_BLUE);
+    XYString(CENTER(1,(char*)"Bluetooth Display"),ILI9341_BLUE);
     XYString(CENTER(4,(char*)VERSION),ILI9341_GREEN);
-    XYString(CENTER(6,(char*)"lornix@lornix.com"),ILI9341_ORANGE);
+    XYString(CENTER(7,(char*)"lornix@lornix.com"),ILI9341_ORANGE);
     delay(750);
-    Serial.println("Done");
+    Serial.println("Splashed");
 }
 
 void setup()
 {
     Serial.begin(9600);
+
     bt.begin(9600);
     bt.listen();
 
@@ -332,20 +370,19 @@ void loop()
     static unsigned long updateTick=0;
     static bool spinnerTick=false;
 
-// to align values
+    // to align values
 #define VALUECOL 32
 #define LEGENDCOL 150
 
-// loop speed, very coarse
+    // loop speed, very coarse
 #define MILLISLOOP 200
+
+    // update Hopi values from bluetooth
+    updateModbusValues();
 
     // update after MILLISLOOP ms
     // full loop takes about 300ms (ugh! slow!  SPI bus?)
     if ((millis()-updateTick)>MILLISLOOP) {
-
-        // update Hopi values from bluetooth
-        updateModbusValues();
-
         // only update display if value has changed since last time
         if (hopi.power!=hopi.s_power) {
             XYString(VALUECOL,0,DBLTOSTR(hopi.power),   ILI9341_GREEN);
