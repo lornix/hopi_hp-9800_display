@@ -18,7 +18,7 @@ const char* VERSION="v0.2";
 #include <Fonts/FreeMonoBold12pt7b.h>
 
 #define FONT_HEIGHT 22
-#define FONT_WIDTH  15
+#define FONT_WIDTH  14
 
 // hard coded for landscape mode 320x240
 #define SCREEN_WIDTH 320
@@ -149,17 +149,19 @@ void invalidateHopiData()
     memset(&hopi,0xff,sizeof(hopi));
 }
 
-void XYString(int x, int y, char *str, int c=-1, int b=-1)
+void XYString(int x, int y, char *str, int c=0, int b=0)
 {
     int16_t x1,y1;
     uint16_t w,h;
     // optional color parameters
-    if (c>=0) {
+    // c==0 uses current color
+    if (c!=0) {
         // specified color?
         tft.setTextColor(c);
     }
-    if (b<0) {
+    if (b==0) {
         // if background not specified, use black
+        // yes, I know that BLACK (=0!) is a weird corner case here
         b=ILI9341_BLACK;
     }
     // allow for easy line choices, 0-9 = lines, 10-239 = pixels
@@ -168,11 +170,11 @@ void XYString(int x, int y, char *str, int c=-1, int b=-1)
     }
     // compensate for varying baselines
     y+=FONT_HEIGHT;
-    // determine size of string in pixel rectangle
+    // determine size of string as pixel rectangle
     tft.getTextBounds(str,x,y,&x1,&y1,&w,&h);
     // blank that rectangle with background color
     tft.fillRect(x1,y1+FILLRECT_Y_ADJ,w+FILLRECT_W_ADJ,FONT_HEIGHT,b);
-    // display string at x,y position (and compensate for baseline)
+    // display string at x,y position
     tft.setCursor(x,y);
     tft.print(str);
 }
@@ -236,16 +238,15 @@ void updateModbusValues()
     // if no bluetooth connection, complain
     while (!checkBluetooth()) {
         if (!bluetoothLost) {
-            // something wrong? drop power to BT module
+            Serial.println("Bluetooth Connection Lost");
+            // Ha! Windows Solution: Turn it off and back on!
             disableBluetooth();
             screenClear(ILI9341_RED);
-            XYString(CENTER(3,(char*)"Lost"));
-            XYString(CENTER(4,(char*)"Bluetooth"));
-            XYString(CENTER(5,(char*)"Connection"));
+            XYString(CENTER(3,(char*)"Lost"),ILI9341_BLUE,ILI9341_RED);
+            XYString(CENTER(4,(char*)"Bluetooth"),ILI9341_BLUE,ILI9341_RED);
+            XYString(CENTER(5,(char*)"Connection"),ILI9341_BLUE,ILI9341_RED);
             bluetoothLost=true;
-            Serial.println("Bluetooth Connection Lost");
-            // pause and turn it back on to reconnect
-            delay(100);
+            delay(200);
             enableBluetooth();
         }
         // just slow loop down while it waits for connection
