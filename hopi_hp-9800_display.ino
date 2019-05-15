@@ -50,7 +50,9 @@ const char* VERSION="v0.2";
 #define I16TOSTR(val) dtostrf((double)val,8,0,hopi.str)
 
 // max MODBUS response length from hopi
-#define MAX_RESPONSE_BYTES 256
+// short because we're not expecting much back
+#define MAX_RESPONSE_BYTES 50
+#define RESPONSE_LEN 45
 
 // maximum string length on a line
 #define MAX_STR_LEN ((SCREEN_WIDTH+FONT_WIDTH-1)/FONT_WIDTH)
@@ -233,7 +235,6 @@ void updateModbusValues()
 {
     static long lastpoll=0;
     static boolean bluetoothLost=false;
-    unsigned int i;
 
     // if no bluetooth connection, complain
     while (!checkBluetooth()) {
@@ -253,7 +254,7 @@ void updateModbusValues()
         delay(100);
     }
 
-#define POLLDELAY 250
+#define POLLDELAY 900
     // only poll once in a while
     if ((millis()-lastpoll)<POLLDELAY) { return; }
 
@@ -267,20 +268,11 @@ void updateModbusValues()
     }
 
     // send the MODBUS request
-    for (i=0; i<sizeof(hopi2.request); ++i) {
-        bt.write(hopi2.request[i]);
-    }
-
-    // interframe delay
-    delay(1);
+    bt.write((uint8_t*)hopi2.request,sizeof(hopi2.request));
 
     // and receive the reply.
-    int cnt;
-    long wait=millis();
-    while (((millis()-wait)<3000)&&((cnt=bt.available())<45)) { }
-    for (int i=0; i<cnt; i++) {
-        hopi2.response[i]=bt.read();
-    }
+    bt.setTimeout(10);
+    int cnt=bt.readBytes((char*)hopi2.response,RESPONSE_LEN);
     Serial.print(cnt);
     Serial.print(": ");
     for (int t=0; t<cnt; t++) {
