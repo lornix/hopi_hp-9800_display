@@ -335,6 +335,7 @@ void splashScreen()
     Serial.print("Splash Screen: ");
     screenClear();
     tft.drawRect(0,0,SCREEN_WIDTH,SCREEN_HEIGHT,ILI9341_RED);
+    tft.drawRect(2,2,SCREEN_WIDTH-4,SCREEN_HEIGHT-4,ILI9341_GREEN);
     XYString(CENTER(0,(char*)"Hopi HP-9800"),ILI9341_RED);
     XYString(CENTER(1,(char*)"Bluetooth Display"),ILI9341_BLUE);
     XYString(CENTER(4,(char*)VERSION),ILI9341_GREEN);
