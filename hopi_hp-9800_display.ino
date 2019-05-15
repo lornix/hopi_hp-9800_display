@@ -227,7 +227,7 @@ uint16_t decode_uint16_ba(int offset)
 void serialHex(uint8_t h)
 {
     // dumb arduino HEX output doesn't pad to 2 bytes, or give a precision knob
-    if (h<0x0f) { Serial.print("0"); }
+    if (h<0x10) { Serial.print("0"); }
     Serial.print(h,HEX);
 }
 
