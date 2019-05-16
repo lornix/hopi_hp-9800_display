@@ -231,9 +231,18 @@ void serialHex(uint8_t h)
     Serial.print(h,HEX);
 }
 
+void showAlive()
+{
+    static bool spinnerTick=false;
+
+    // 'alive' indicator, toggles dots in corner
+    tft.fillRect(SCREEN_WIDTH-5,0,5,5,(spinnerTick)?ILI9341_RED:ILI9341_GREEN);
+    spinnerTick=!spinnerTick;
+}
+
 void updateModbusValues()
 {
-    static long lastpoll=0;
+    static unsigned long nextpoll=0;
     static boolean bluetoothLost=false;
 
     // if no bluetooth connection, complain
@@ -250,13 +259,15 @@ void updateModbusValues()
             delay(200);
             enableBluetooth();
         }
-        // just slow loop down while it waits for connection
-        delay(100);
+        // slow loop down while it waits for connection
+        delay(200);
+        showAlive();
     }
 
-#define POLLDELAY 900
+#define NEXTMILLIS 900
+
     // only poll once in a while
-    if ((millis()-lastpoll)<POLLDELAY) { return; }
+    if (millis()<nextpoll) { return; }
 
     // did bluetooth go missing and has returned?
     if (bluetoothLost) {
@@ -280,7 +291,7 @@ void updateModbusValues()
     }
     Serial.println();
 
-    lastpoll=millis();
+    nextpoll=millis()+NEXTMILLIS;
 
     // no, I'm not checking for a proper CRC or anything, winging it!
     // but we'll at least look for proper response length via byte 2
@@ -317,7 +328,10 @@ void waitForBluetooth()
     XYString(CENTER(9,(char*)"Wait for Bluetooth"),ILI9341_BLUE);
 
     // slow loop down a bit while we wait
-    while (!checkBluetooth()) { delay(50); }
+    while (!checkBluetooth()) {
+        delay(200);
+        showAlive();
+    }
 
     Serial.println("Linked");
 }
@@ -336,6 +350,53 @@ void splashScreen()
     Serial.println("Splashed");
 }
 
+void updateValue(int y,double val,int vcolor,char* str,int scolor)
+{
+    // to align values
+#define VALUECOL 32
+#define LEGENDCOL 150
+
+    XYString(VALUECOL,y,DBLTOSTR(val),vcolor);
+    XYString(LEGENDCOL,y,str,scolor);
+}
+void updateDisplay()
+{
+    static unsigned long updateTick=0;
+
+    // loop speed, very coarse
+#define UPDATEMILLIS 200
+
+    // full loop takes about 300ms (ugh! slow!  SPI bus?)
+    if (millis()>updateTick) {
+        // only update display if value has changed since last time
+        if (hopi.power!=hopi.s_power) {
+            updateValue(0,hopi.power,ILI9341_GREEN,(char*)"Watts",ILI9341_BLUE);
+            // hopi.s_power=hopi.power;
+        }
+        if (hopi.current!=hopi.s_current) {
+            updateValue(1,hopi.current,ILI9341_GREEN,(char*)"Amps",ILI9341_BLUE);
+            // hopi.s_current=hopi.current;
+        }
+        if (hopi.voltage!=hopi.s_voltage) {
+            updateValue(2,hopi.voltage,ILI9341_GREEN,(char*)"Volts",ILI9341_BLUE);
+            // hopi.s_voltage=hopi.voltage;
+        }
+        if (hopi.pfactor!=hopi.s_pfactor) {
+            updateValue(3,hopi.pfactor,ILI9341_GREEN,(char*)"pfact",ILI9341_BLUE);
+            // hopi.s_pfactor=hopi.pfactor;
+        }
+        if (hopi.freq!=hopi.s_freq) {
+            updateValue(4,hopi.freq,ILI9341_GREEN,(char*)"Hz",ILI9341_BLUE);
+            // hopi.s_freq=hopi.freq;
+        }
+        if (hopi.annual!=hopi.s_annual) {
+            updateValue(5,hopi.annual,ILI9341_GREEN,(char*)"KW Hr",ILI9341_BLUE);
+            // hopi.s_annual=hopi.annual;
+        }
+        updateTick=millis()+UPDATEMILLIS;
+    }
+}
+
 void setup()
 {
     Serial.begin(9600);
@@ -345,13 +406,13 @@ void setup()
 
     Serial.println("\n\rStarting Hopi HP-9800bt display");
 
-    // turn off BT module
     disableBluetooth();
 
     screenInit();
 
     splashScreen();
 
+    // turns bluetooth on
     waitForBluetooth();
 
     screenClear();
@@ -361,59 +422,14 @@ void setup()
 
 void loop()
 {
-    static unsigned long updateTick=0;
-    static bool spinnerTick=false;
-
-    // to align values
-#define VALUECOL 32
-#define LEGENDCOL 150
-
-    // loop speed, very coarse
-#define MILLISLOOP 200
-
     // update Hopi values from bluetooth
     updateModbusValues();
 
-    // update after MILLISLOOP ms
-    // full loop takes about 300ms (ugh! slow!  SPI bus?)
-    if ((millis()-updateTick)>MILLISLOOP) {
-        // only update display if value has changed since last time
-        if (hopi.power!=hopi.s_power) {
-            XYString(VALUECOL,0,DBLTOSTR(hopi.power),   ILI9341_GREEN);
-            XYString(LEGENDCOL,0,(char*)"Watts", ILI9341_BLUE);
-            hopi.s_power=hopi.power;
-        }
-        if (hopi.current!=hopi.s_current) {
-            XYString(VALUECOL,1,DBLTOSTR(hopi.current),   ILI9341_GREEN);
-            XYString(LEGENDCOL,1,(char*)"Amps",  ILI9341_BLUE);
-            hopi.s_current=hopi.current;
-        }
-        if (hopi.voltage!=hopi.s_voltage) {
-            XYString(VALUECOL,2,DBLTOSTR(hopi.voltage), ILI9341_GREEN);
-            XYString(LEGENDCOL,2,(char*)"Volts", ILI9341_BLUE);
-            hopi.s_voltage=hopi.voltage;
-        }
-        if (hopi.pfactor!=hopi.s_pfactor) {
-            XYString(VALUECOL,3,DBLTOSTR(hopi.pfactor), ILI9341_GREEN);
-            XYString(LEGENDCOL,3,(char*)"pfact",        ILI9341_BLUE);
-            hopi.s_pfactor=hopi.pfactor;
-        }
-        if (hopi.freq!=hopi.s_freq) {
-            XYString(VALUECOL,4,DBLTOSTR(hopi.freq), ILI9341_GREEN);
-            XYString(LEGENDCOL,4,(char*)"Hz",        ILI9341_BLUE);
-            hopi.s_freq=hopi.freq;
-        }
-        if (hopi.annual!=hopi.s_annual) {
-            XYString(VALUECOL,5,DBLTOSTR(hopi.annual), ILI9341_GREEN);
-            XYString(LEGENDCOL,5,(char*)"KW Hr",       ILI9341_BLUE);
-            hopi.s_annual=hopi.annual;
-        }
-        updateTick=millis();
-    }
+    // redraw screen
+    updateDisplay();
 
-    // 'alive' indicator, toggles dots in upper left corner
-    tft.fillRect(SCREEN_WIDTH-5,0,5,5,(spinnerTick)?ILI9341_RED:ILI9341_GREEN);
-    spinnerTick=!spinnerTick;
+    // twiddle bits to indicate we're still alive
+    showAlive();
 
     /*
      * if (Serial.available()) {
