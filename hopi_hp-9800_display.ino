@@ -17,6 +17,9 @@ const char* VERSION="v0.2";
 #include <SoftwareSerial.h>
 #include <Fonts/FreeMonoBold12pt7b.h>
 
+// enable serial output
+// #define SEROUT
+
 #define FONT_HEIGHT 22
 #define FONT_WIDTH  14
 
@@ -49,11 +52,6 @@ const char* VERSION="v0.2";
 #define DBLTOSTR(val) dtostrf((double)val,8,3,hopi.str)
 #define I16TOSTR(val) dtostrf((double)val,8,0,hopi.str)
 
-// max MODBUS response length from hopi
-// short because we're not expecting much back
-#define MAX_RESPONSE_BYTES 50
-#define RESPONSE_LEN 45
-
 // maximum string length on a line
 #define MAX_STR_LEN ((SCREEN_WIDTH+FONT_WIDTH-1)/FONT_WIDTH)
 
@@ -74,20 +72,19 @@ enum offsets {
 };
 
 // holds all the data fumbled from hopi device
-// s_xxx is saved value for display flicker reduction
 struct hopi {
     // Power being used, Current * Voltage basically
-    double power, s_power;
+    double power;
     // Current being drawn
-    double current, s_current;
+    double current;
     // Voltage at input
-    double voltage, s_voltage;
+    double voltage;
     // Frequency of source, 50 or 60 Hz usually
-    double freq, s_freq;
+    double freq;
     // Power Factor, 1.0 = pure resistive
-    double pfactor, s_pfactor;
+    double pfactor;
     // total predicted annual consumption KWH
-    double annual, s_annual;
+    double annual;
     // Active Power Consumption
     double active;
     // Reactive Power Consumption
@@ -102,28 +99,25 @@ struct hopi {
     char str[MAX_STR_LEN+1];
 } hopi;
 
-struct {
-    // command string to send to BT Hopi
-    // I assume device has ID 1, rather unlikely your Hopi will be different.
-    // If you change the Hopi ID, you can change this to match (it *is*
-    // possible to change, in case you desire to chain many of these on the
-    // same bus.  Uh huh... )
-    uint8_t request[8]={
-        0x01,       // query device #1
-        0x03,       // request holding registers
-        0x00,0x00,  // from 0x0000
-        0x00,0x14,  // for 0x0014 registers (20 words, 40 bytes)
-        0x45,0xc5   // CRC checksum
-    };
-    // and space to hold the response received
-    uint8_t response[MAX_RESPONSE_BYTES];
-} hopi2;
-
 // bluetooth module @ 9600,8N1
 SoftwareSerial bt(BTRX,BTTX); // RX pin, TX pin
 
 // TFT 2.8" Display, blah, blah...
 Adafruit_ILI9341 tft(CS,DC,RST);
+
+void btInit()
+{
+    // set up the various BT pins
+    // power off!
+    pinMode(BTPWR, OUTPUT);
+    digitalWrite(BTPWR, LOW);
+    pinMode(BTSTATUS, INPUT);
+    pinMode(BTRX, INPUT);
+    pinMode(BTTX, OUTPUT);
+    digitalWrite(BTTX, HIGH);
+    bt.begin(9600);
+    bt.listen();
+}
 
 bool checkBluetooth()
 {
@@ -132,21 +126,25 @@ bool checkBluetooth()
 }
 void enableBluetooth()
 {
+#ifdef SEROUT
     Serial.println("Bluetooth Power: ON");
+#endif
     // yeah, cheesy function, but helps readability of code
-    pinMode(BTPWR, OUTPUT);
     digitalWrite(BTPWR, HIGH);
 }
 void disableBluetooth()
 {
+#ifdef SEROUT
     Serial.println("Bluetooth Power: OFF");
+#endif
     // readability.. yeah... that's it!
-    pinMode(BTPWR, OUTPUT);
     digitalWrite(BTPWR, LOW);
 }
 void invalidateHopiData()
 {
+#ifdef SEROUT
     Serial.println("Invalidate Hopi Data");
+#endif
     // invalidate hopi data
     memset(&hopi,0xff,sizeof(hopi));
 }
@@ -158,12 +156,12 @@ void XYString(int x, int y, char *str, int c=0, int b=0)
     // optional color parameters
     // c==0 uses current color
     if (c!=0) {
-        // specified color?
+        // color was specified?
         tft.setTextColor(c);
     }
     if (b==0) {
         // if background not specified, use black
-        // yes, I know that BLACK (=0!) is a weird corner case here
+        // yes, I know that BLACK (0x0000!) is a weird corner case here
         b=ILI9341_BLACK;
     }
     // allow for easy line choices, 0-9 = lines, 10-239 = pixels
@@ -195,7 +193,7 @@ void screenInit()
     screenClear();
 }
 
-double decode_float_dcba(int offset)
+double decode_float_dcba(uint8_t* response,int offset)
 {
     union {
         double dbl;
@@ -204,31 +202,33 @@ double decode_float_dcba(int offset)
     // compensate for raw data in reponse
     offset=(offset*2)+3;
     // rearrange bytes to convert from network format (big-endian) to double
-    u.b[3]=hopi2.response[offset+3];
-    u.b[2]=hopi2.response[offset+2];
-    u.b[1]=hopi2.response[offset+1];
-    u.b[0]=hopi2.response[offset+0];
+    u.b[3]=response[offset+3];
+    u.b[2]=response[offset+2];
+    u.b[1]=response[offset+1];
+    u.b[0]=response[offset+0];
     // a couple sanity checks - no negative values
     if (u.dbl<0.0f) { u.dbl=0.0f; }
     // if you've got more than 9999.999 AMPS flowing, congratulations!
     if (u.dbl>9999.999f) { u.dbl=9999.999f; }
     return u.dbl;
 }
-uint16_t decode_uint16_ba(int offset)
+uint16_t decode_uint16_ba(uint8_t* response,int offset)
 {
     // compensate for raw data in response
     offset=(offset*2)+3;
-    unsigned int high=hopi2.response[offset+0];
-    unsigned int low= hopi2.response[offset+1];
+    unsigned int high=response[offset+0];
+    unsigned int low= response[offset+1];
     unsigned int val=(low<<8)+high;
     // no sanity checks needed, it's unsigned, and short int (65535!)
     return val;
 }
 void serialHex(uint8_t h)
 {
+#ifdef SEROUT
     // dumb arduino HEX output doesn't pad to 2 bytes, or give a precision knob
     if (h<0x10) { Serial.print("0"); }
     Serial.print(h,HEX);
+#endif
 }
 
 void showAlive()
@@ -242,81 +242,105 @@ void showAlive()
 
 void updateModbusValues()
 {
+    // command string to send to Hopi via BT
+    // I assume device has ID 1, rather unlikely your Hopi will be different.
+    // If you change the Hopi ID, you can change this to match (it *is*
+    // possible to change, in case you desire to chain many of these on the
+    // same bus.  Uh huh... )
+    uint8_t request[8]={
+        0x01,       // query device #1
+        0x03,       // request holding registers
+        0x00,0x00,  // from 0x0000
+        0x00,0x14,  // for 0x0014 registers (20 words, 40 bytes)
+        0x45,0xc5   // CRC checksum
+    };
+    // space to hold the response received
+    // max MODBUS response length from hopi
+    // short because we're not expecting much back
+#define MAX_RESPONSE_BYTES 50
+#define RESPONSE_LEN 45
+    uint8_t response[MAX_RESPONSE_BYTES];
     static unsigned long nextpoll=0;
-    static boolean bluetoothLost=false;
 
     // if no bluetooth connection, complain
-    while (!checkBluetooth()) {
-        if (!bluetoothLost) {
-            Serial.println("Bluetooth Connection Lost");
-            // Ha! Windows Solution: Turn it off and back on!
-            disableBluetooth();
-            screenClear(ILI9341_RED);
-            XYString(CENTER(3,(char*)"Lost"),ILI9341_BLUE,ILI9341_RED);
-            XYString(CENTER(4,(char*)"Bluetooth"),ILI9341_BLUE,ILI9341_RED);
-            XYString(CENTER(5,(char*)"Connection"),ILI9341_BLUE,ILI9341_RED);
-            bluetoothLost=true;
-            delay(200);
-            enableBluetooth();
-        }
-        // slow loop down while it waits for connection
+    if (!checkBluetooth()) {
+#ifdef SEROUT
+        Serial.println("Bluetooth Connection Lost");
+#endif
+        // Ha! Windows Solution: Turn it off and back on!
+        disableBluetooth();
+        screenClear(ILI9341_RED);
+        XYString(CENTER(3,(char*)"Lost"),ILI9341_BLUE,ILI9341_RED);
+        XYString(CENTER(4,(char*)"Bluetooth"),ILI9341_BLUE,ILI9341_RED);
+        XYString(CENTER(5,(char*)"Connection"),ILI9341_BLUE,ILI9341_RED);
         delay(200);
-        showAlive();
+        enableBluetooth();
+        while (!checkBluetooth()) {
+            // slow loop down while it waits for reconnection
+            delay(200);
+            showAlive();
+        }
+        // bluetooth has returned
+#ifdef SEROUT
+        Serial.println("Bluetooth Connection Restored");
+#endif
+        screenClear();
+        // make display redraw everything
+        invalidateHopiData();
+        // force poll to occur
+        nextpoll=millis();
     }
 
-#define NEXTMILLIS 900
+#define NEXTMILLIS 150
 
     // only poll once in a while
     if (millis()<nextpoll) { return; }
 
-    // did bluetooth go missing and has returned?
-    if (bluetoothLost) {
-        Serial.println("Bluetooth Connection Restored");
-        bluetoothLost=false;
-        screenClear();
-        // make display redraw everything
-        invalidateHopiData();
-    }
+    nextpoll=millis()+NEXTMILLIS;
 
+    // force 3.5ms inter-frame delay
+    delay(4);
     // send the MODBUS request
-    bt.write((uint8_t*)hopi2.request,sizeof(hopi2.request));
+    bt.write((uint8_t*)request,sizeof(request));
 
     // and receive the reply.
-    bt.setTimeout(10);
-    int cnt=bt.readBytes((char*)hopi2.response,RESPONSE_LEN);
+    bt.setTimeout(5);
+    // min function to prevent me making stupid errors and buffer overruns
+    int cnt=bt.readBytes((char*)response,min(RESPONSE_LEN,MAX_RESPONSE_BYTES));
+#ifdef SEROUT
     Serial.print(cnt);
     Serial.print(": ");
     for (int t=0; t<cnt; t++) {
-        serialHex(hopi2.response[t]);
+        serialHex(response[t]);
     }
     Serial.println();
+#endif
 
-    nextpoll=millis()+NEXTMILLIS;
+    // nothing received?  try again later
+    if (cnt<1) { return; }
+
 
     // no, I'm not checking for a proper CRC or anything, winging it!
     // but we'll at least look for proper response length via byte 2
 
     // did we get packet with 40 bytes of data?
-    if (hopi2.response[2]!=40) {
-        return;
-    }
-    // voltage still near zero?  try again
-    if (decode_float_dcba(VOLTAGE)<1.0f) {
-        return;
-    }
+    if (response[2]!=40) { return; }
 
-    hopi.current=    decode_float_dcba(CURRENT);
-    hopi.voltage=    decode_float_dcba(VOLTAGE);
-    hopi.power=      decode_float_dcba(POWER);
-    hopi.freq=       decode_float_dcba(FREQ);
-    hopi.pfactor=    decode_float_dcba(PFACT);
-    hopi.annual=     decode_float_dcba(ANNUAL);
-    hopi.active=     decode_float_dcba(ACTIVE);
-    hopi.reactive=   decode_float_dcba(REACTIVE);
+    // voltage still near zero?  try again
+    if (decode_float_dcba(response,VOLTAGE)<1.0f) { return; }
+
+    hopi.current=    decode_float_dcba(response,CURRENT);
+    hopi.voltage=    decode_float_dcba(response,VOLTAGE);
+    hopi.power=      decode_float_dcba(response,POWER);
+    hopi.freq=       decode_float_dcba(response,FREQ);
+    hopi.pfactor=    decode_float_dcba(response,PFACT);
+    hopi.annual=     decode_float_dcba(response,ANNUAL);
+    hopi.active=     decode_float_dcba(response,ACTIVE);
+    hopi.reactive=   decode_float_dcba(response,REACTIVE);
     // load_time is stored in minutes, convert to hours
-    hopi.load_time=  decode_float_dcba(LOAD_TIME)/60.0f;
-    hopi.work_hours= decode_uint16_ba(WORK_HOURS);
-    hopi.devaddr=    decode_uint16_ba(DEVADDR);
+    hopi.load_time=  decode_float_dcba(response,LOAD_TIME)/60.0f;
+    hopi.work_hours= decode_uint16_ba(response,WORK_HOURS);
+    hopi.devaddr=    decode_uint16_ba(response,DEVADDR);
 }
 
 void waitForBluetooth()
@@ -324,7 +348,9 @@ void waitForBluetooth()
     // turn on BT module
     enableBluetooth();
 
+#ifdef SEROUT
     Serial.print("Connecting to Bluetooth: ");
+#endif
     XYString(CENTER(9,(char*)"Wait for Bluetooth"),ILI9341_BLUE);
 
     // slow loop down a bit while we wait
@@ -333,12 +359,16 @@ void waitForBluetooth()
         showAlive();
     }
 
+#ifdef SEROUT
     Serial.println("Linked");
+#endif
 }
 
 void splashScreen()
 {
+#ifdef SEROUT
     Serial.print("Splash Screen: ");
+#endif
     screenClear();
     tft.drawRect(0,0,SCREEN_WIDTH,SCREEN_HEIGHT,ILI9341_RED);
     tft.drawRect(2,2,SCREEN_WIDTH-4,SCREEN_HEIGHT-4,ILI9341_GREEN);
@@ -347,7 +377,9 @@ void splashScreen()
     XYString(CENTER(4,(char*)VERSION),ILI9341_GREEN);
     XYString(CENTER(7,(char*)"lornix@lornix.com"),ILI9341_ORANGE);
     delay(750);
+#ifdef SEROUT
     Serial.println("Splashed");
+#endif
 }
 
 void updateValue(int y,double val,int vcolor,char* str,int scolor)
@@ -364,49 +396,30 @@ void updateDisplay()
     static unsigned long updateTick=0;
 
     // loop speed, very coarse
-#define UPDATEMILLIS 200
+#define UPDATEMILLIS 900
 
     // full loop takes about 300ms (ugh! slow!  SPI bus?)
-    if (millis()>updateTick) {
-        // only update display if value has changed since last time
-        if (hopi.power!=hopi.s_power) {
-            updateValue(0,hopi.power,ILI9341_GREEN,(char*)"Watts",ILI9341_BLUE);
-            // hopi.s_power=hopi.power;
-        }
-        if (hopi.current!=hopi.s_current) {
-            updateValue(1,hopi.current,ILI9341_GREEN,(char*)"Amps",ILI9341_BLUE);
-            // hopi.s_current=hopi.current;
-        }
-        if (hopi.voltage!=hopi.s_voltage) {
-            updateValue(2,hopi.voltage,ILI9341_GREEN,(char*)"Volts",ILI9341_BLUE);
-            // hopi.s_voltage=hopi.voltage;
-        }
-        if (hopi.pfactor!=hopi.s_pfactor) {
-            updateValue(3,hopi.pfactor,ILI9341_GREEN,(char*)"pfact",ILI9341_BLUE);
-            // hopi.s_pfactor=hopi.pfactor;
-        }
-        if (hopi.freq!=hopi.s_freq) {
-            updateValue(4,hopi.freq,ILI9341_GREEN,(char*)"Hz",ILI9341_BLUE);
-            // hopi.s_freq=hopi.freq;
-        }
-        if (hopi.annual!=hopi.s_annual) {
-            updateValue(5,hopi.annual,ILI9341_GREEN,(char*)"KW Hr",ILI9341_BLUE);
-            // hopi.s_annual=hopi.annual;
-        }
-        updateTick=millis()+UPDATEMILLIS;
-    }
+    if (millis()<updateTick) { return; }
+
+    updateValue(0, hopi.power,   ILI9341_GREEN, (char*)"Watts", ILI9341_BLUE);
+    updateValue(1, hopi.current, ILI9341_GREEN, (char*)"Amps",  ILI9341_BLUE);
+    updateValue(2, hopi.voltage, ILI9341_GREEN, (char*)"Volts", ILI9341_BLUE);
+    updateValue(3, hopi.pfactor, ILI9341_GREEN, (char*)"pfact", ILI9341_BLUE);
+    updateValue(4, hopi.freq,    ILI9341_GREEN, (char*)"Hz",    ILI9341_BLUE);
+    updateValue(5, hopi.annual,  ILI9341_GREEN, (char*)"KWH",   ILI9341_BLUE);
+
+    updateTick=millis()+UPDATEMILLIS;
 }
 
 void setup()
 {
+#ifdef SEROUT
     Serial.begin(9600);
 
-    bt.begin(9600);
-    bt.listen();
+    Serial.println("\n\rStarting Hopi HP-9800 Bluetooth display");
+#endif
 
-    Serial.println("\n\rStarting Hopi HP-9800bt display");
-
-    disableBluetooth();
+    btInit();
 
     screenInit();
 
@@ -430,13 +443,4 @@ void loop()
 
     // twiddle bits to indicate we're still alive
     showAlive();
-
-    /*
-     * if (Serial.available()) {
-     *     bt.write(Serial.read());
-     * }
-     * if (bt.available()) {
-     *     Serial.write(bt.read());
-     * }
-     */
 }
